@@ -132,6 +132,9 @@ async function initBrowser() {
 
 // ─── PROCESAR PAGO ───────────────────────────────────────────────────────────
 async function processPayment(params) {
+    log(`\n══════ INICIANDO PROCESAMIENTO ══════`);
+    log(`📱 ${params.celular} | 💰 $${parseInt(params.monto).toLocaleString()} | 🏦 ${BANCO_NOMBRES[params.banco]}`);
+
     if (!browserReady || !page) {
         await initBrowser();
     }
@@ -147,12 +150,15 @@ async function processPayment(params) {
     await page.goto('https://www.daviplata.com/recargar-con-pse', {
         waitUntil: 'domcontentloaded', timeout: 25000
     }).catch(() => {});
+    await sleep(3000);
+    log(`📍 URL actual: ${page.url().substring(0, 100)}`);
     
     // 2. Esperar formulario
     try {
-        await page.waitForURL(/pse010-web|formulariodatos/, { timeout: 20000 });
+        await page.waitForURL(/pse010-web|formulariodatos|solicitudInicial/, { timeout: 20000 });
     } catch {}
     await sleep(2000);
+    log(`📍 URL después de esperar: ${page.url().substring(0, 100)}`);
 
     // 3. Llenar formulario
     log('📝 Llenando formulario...');
@@ -160,59 +166,83 @@ async function processPayment(params) {
     const nombreInput = page.locator('#nombre');
     if (await nombreInput.isVisible({ timeout: 2000 }).catch(() => false)) {
         await nombreInput.fill(params.nombre);
-    }
+        log('  ✓ Nombre');
+    } else { log('  ✗ No se encontró #nombre'); }
 
     await selectAngularDropdown('Seleccione', 'Cédula de ciudadanía');
 
     const docInput = page.locator('#numeroDocumento');
     if (await docInput.isVisible({ timeout: 2000 }).catch(() => false)) {
         await docInput.fill(params.doc);
-    }
+        log('  ✓ Documento');
+    } else { log('  ✗ No se encontró #numeroDocumento'); }
 
     const celInput = page.locator('#numeroDvplata');
     if (await celInput.isVisible({ timeout: 2000 }).catch(() => false)) {
         await celInput.fill(params.celular);
-    }
+        log('  ✓ Celular');
+    } else { log('  ✗ No se encontró #numeroDvplata'); }
 
     const confInput = page.locator('#confirmaDvplata');
     if (await confInput.isVisible({ timeout: 2000 }).catch(() => false)) {
         await confInput.fill(params.celular);
-    }
+        log('  ✓ Confirmar celular');
+    } else { log('  ✗ No se encontró #confirmaDvplata'); }
 
     const valorInput = page.locator('input[name="valor"]');
     if (await valorInput.isVisible({ timeout: 2000 }).catch(() => false)) {
         await valorInput.fill(params.monto);
-    }
+        log('  ✓ Valor');
+    } else { log('  ✗ No se encontró input[name="valor"]'); }
 
     const bancoNombre = BANCO_NOMBRES[params.banco];
     if (bancoNombre) {
-        await selectAngularDropdown('Seleccione el banco', bancoNombre);
+        const bancoOk = await selectAngularDropdown('Seleccione el banco', bancoNombre);
+        log(bancoOk ? '  ✓ Banco' : '  ✗ No se pudo seleccionar banco');
     }
 
     const emailInput = page.locator('#emailUsuario');
     if (await emailInput.isVisible({ timeout: 2000 }).catch(() => false)) {
         await emailInput.fill(params.correo);
-    }
+        log('  ✓ Correo');
+    } else { log('  ✗ No se encontró #emailUsuario'); }
 
     const chk = page.locator('input[name="authData"]');
     if (await chk.isVisible({ timeout: 2000 }).catch(() => false)) {
         await chk.check({ force: true });
-    }
+        log('  ✓ Términos');
+    } else { log('  ✗ No se encontró checkbox'); }
 
     log('✅ Formulario listo');
 
     // 4. Captcha
+    log(`🔑 CAPTCHA_KEY configurada: ${CAPTCHA_KEY ? 'SI' : 'NO'}`);
     const captchaToken = await solveCaptcha();
     if (captchaToken) {
+        log('🔧 Inyectando captcha...');
         await page.evaluate((token) => {
             const ta = document.querySelector('#g-recaptcha-response');
             if (ta) {
                 const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
                 setter.call(ta, token);
                 ta.dispatchEvent(new Event('input', { bubbles: true }));
+                ta.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            // También intentar con grecaptcha si existe
+            if (typeof grecaptcha !== 'undefined' && grecaptcha.getResponse) {
+                try {
+                    const widgets = document.querySelectorAll('.g-recaptcha');
+                    widgets.forEach(w => {
+                        const id = w.getAttribute('data-widget-id') || 0;
+                        grecaptcha.execute(parseInt(id));
+                    });
+                } catch(e) {}
             }
         }, captchaToken);
-        await sleep(2000);
+        await sleep(3000);
+        log('  ✓ Captcha inyectado');
+    } else {
+        log('  ⚠️ Sin captcha — el botón Continuar puede estar deshabilitado');
     }
 
     // 5. Click Continuar
@@ -221,11 +251,17 @@ async function processPayment(params) {
         const btn = page.locator('button:has-text("Continuar")');
         await btn.waitFor({ state: 'visible', timeout: 5000 });
         const disabled = await btn.isDisabled().catch(() => true);
+        log(`  Botón Continuar deshabilitado: ${disabled}`);
         if (!disabled) {
             await btn.click();
-            await sleep(3000);
+            log('  ✓ Click en Continuar');
+            await sleep(5000);
+        } else {
+            log('  ✗ Botón Continuar está deshabilitado');
         }
-    } catch {}
+    } catch(e) {
+        log(`  ✗ Error click Continuar: ${e.message}`);
+    }
 
     // 6. Confirmar - esperar a que cargue la confirmación
     await sleep(3000);
