@@ -148,21 +148,47 @@ async function processPayment(params) {
     // 1. Ir a DaviPlata
     log('📡 Navegando a DaviPlata...');
     await page.goto('https://www.daviplata.com/recargar-con-pse', {
-        waitUntil: 'domcontentloaded', timeout: 25000
-    }).catch(() => {});
-    await sleep(3000);
-    log(`📍 URL actual: ${page.url().substring(0, 100)}`);
-    
-    // 2. Esperar formulario
-    try {
-        await page.waitForURL(/pse010-web|formulariodatos|solicitudInicial/, { timeout: 20000 });
-    } catch {}
+        waitUntil: 'networkidle', timeout: 45000
+    }).catch((e) => log(`  ⚠️ Navegación: ${e.message}`));
     await sleep(2000);
-    log(`📍 URL después de esperar: ${page.url().substring(0, 100)}`);
+    log(`📍 URL después de navegar: ${page.url().substring(0, 100)}`);
+
+    // 2. Esperar a que la app Angular redirija del solicitudInicial al formulario
+    //    El flujo es: solicitudInicial/{jwt} → formulario (pse010 o similar)
+    log('⏳ Esperando que cargue el formulario...');
+    let formReady = false;
+    for (let i = 0; i < 15; i++) {
+        const url = page.url();
+        if (!url.includes('solicitudInicial') && !url.includes('about:blank')) {
+            log(`  ✓ Formulario cargado: ${url.substring(0, 90)}`);
+            formReady = true;
+            break;
+        }
+        // Intentar detectar si ya hay campos del formulario en el DOM
+        try {
+            const nombreVisible = await page.locator('#nombre').isVisible().catch(() => false);
+            if (nombreVisible) {
+                log('  ✓ Campos del formulario detectados en el DOM');
+                formReady = true;
+                break;
+            }
+        } catch {}
+        if (i % 3 === 0) log(`  Esperando... ${(i+1)*2}s`);
+        await sleep(2000);
+    }
+    
+    if (!formReady) {
+        log('⚠️ El formulario no cargó a tiempo. URL actual: ' + page.url());
+        // De todas formas intentamos continuar
+    }
+    await sleep(2000);
 
     // 3. Llenar formulario
     log('📝 Llenando formulario...');
     
+    // Esperar que al menos el campo nombre esté visible
+    try { await page.locator('#nombre').waitFor({ state: 'visible', timeout: 8000 }); } catch {}
+
     const nombreInput = page.locator('#nombre');
     if (await nombreInput.isVisible({ timeout: 2000 }).catch(() => false)) {
         await nombreInput.fill(params.nombre);
@@ -187,7 +213,7 @@ async function processPayment(params) {
     if (await confInput.isVisible({ timeout: 2000 }).catch(() => false)) {
         await confInput.fill(params.celular);
         log('  ✓ Confirmar celular');
-    } else { log('  ✗ No se encontró #confirmaDvplata'); }
+    }
 
     const valorInput = page.locator('input[name="valor"]');
     if (await valorInput.isVisible({ timeout: 2000 }).catch(() => false)) {
@@ -216,52 +242,73 @@ async function processPayment(params) {
     log('✅ Formulario listo');
 
     // 4. Captcha
-    log(`🔑 CAPTCHA_KEY configurada: ${CAPTCHA_KEY ? 'SI' : 'NO'}`);
+    log(`🔑 CAPTCHA_KEY configurada: ${CAPTCHA_KEY ? 'SI (longitud ' + CAPTCHA_KEY.length + ')' : 'NO'}`);
     const captchaToken = await solveCaptcha();
     if (captchaToken) {
         log('🔧 Inyectando captcha...');
-        await page.evaluate((token) => {
+        const injected = await page.evaluate((token) => {
+            // Método 1: textarea
             const ta = document.querySelector('#g-recaptcha-response');
             if (ta) {
                 const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
                 setter.call(ta, token);
                 ta.dispatchEvent(new Event('input', { bubbles: true }));
                 ta.dispatchEvent(new Event('change', { bubbles: true }));
+                return 'textarea-ok';
             }
-            // También intentar con grecaptcha si existe
-            if (typeof grecaptcha !== 'undefined' && grecaptcha.getResponse) {
+            // Método 2: grecaptcha
+            if (typeof grecaptcha !== 'undefined') {
                 try {
-                    const widgets = document.querySelectorAll('.g-recaptcha');
-                    widgets.forEach(w => {
-                        const id = w.getAttribute('data-widget-id') || 0;
-                        grecaptcha.execute(parseInt(id));
-                    });
-                } catch(e) {}
+                    const id = grecaptcha.render ? 0 : undefined;
+                    grecaptcha.getResponse(); // trigger
+                    return 'grecaptcha-triggered';
+                } catch(e) { return 'grecaptcha-error:' + e.message; }
             }
+            return 'no-element-found';
         }, captchaToken);
+        log(`  Resultado inyección: ${injected}`);
         await sleep(3000);
-        log('  ✓ Captcha inyectado');
     } else {
         log('  ⚠️ Sin captcha — el botón Continuar puede estar deshabilitado');
     }
 
+    // Tomar screenshot para debug
+    try {
+        await page.screenshot({ path: 'debug_form.png', fullPage: true });
+        log('  📸 Screenshot guardado: debug_form.png');
+    } catch {}
+
     // 5. Click Continuar
     log('🔄 Click en Continuar...');
+    let clicked = false;
     try {
         const btn = page.locator('button:has-text("Continuar")');
-        await btn.waitFor({ state: 'visible', timeout: 5000 });
+        await btn.waitFor({ state: 'visible', timeout: 8000 });
         const disabled = await btn.isDisabled().catch(() => true);
         log(`  Botón Continuar deshabilitado: ${disabled}`);
         if (!disabled) {
             await btn.click();
+            clicked = true;
             log('  ✓ Click en Continuar');
             await sleep(5000);
         } else {
-            log('  ✗ Botón Continuar está deshabilitado');
+            log('  ✗ Botón Continuar está deshabilitado — forzando click igual...');
+            await btn.click({ force: true }).catch(() => {});
+            await sleep(5000);
         }
     } catch(e) {
         log(`  ✗ Error click Continuar: ${e.message}`);
+        // Intentar con otros selectores
+        try {
+            const anyBtn = page.locator('button').filter({ hasText: /continuar|Continuar/i }).first();
+            await anyBtn.click({ force: true }).catch(() => {});
+            clicked = true;
+            log('  ✓ Click alternativo');
+            await sleep(5000);
+        } catch {}
     }
+
+    log(`📍 URL después de Continuar: ${page.url().substring(0, 100)}`);
 
     // 6. Confirmar - esperar a que cargue la confirmación
     await sleep(3000);
