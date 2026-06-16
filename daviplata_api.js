@@ -148,54 +148,38 @@ async function processPayment(params) {
     // 1. Ir a DaviPlata
     log('📡 Navegando a DaviPlata...');
     await page.goto('https://www.daviplata.com/recargar-con-pse', {
-        waitUntil: 'networkidle', timeout: 45000
+        waitUntil: 'domcontentloaded', timeout: 30000
     }).catch((e) => log(`  ⚠️ Navegación: ${e.message}`));
-    await sleep(2000);
+    await sleep(3000);
     log(`📍 URL después de navegar: ${page.url().substring(0, 100)}`);
 
-    // 2. Esperar a que la app Angular redirija del solicitudInicial al formulario
-    //    El flujo es: solicitudInicial/{jwt} → formulario (pse010 o similar)
-    log('⏳ Esperando que cargue el formulario...');
-    let formReady = false;
-    for (let i = 0; i < 15; i++) {
-        const url = page.url();
-        if (!url.includes('solicitudInicial') && !url.includes('about:blank')) {
-            log(`  ✓ Formulario cargado: ${url.substring(0, 90)}`);
-            formReady = true;
-            break;
-        }
-        // Intentar detectar si ya hay campos del formulario en el DOM
-        try {
-            const nombreVisible = await page.locator('#nombre').isVisible().catch(() => false);
-            if (nombreVisible) {
-                log('  ✓ Campos del formulario detectados en el DOM');
-                formReady = true;
-                break;
-            }
-        } catch {}
-        if (i % 3 === 0) log(`  Esperando... ${(i+1)*2}s`);
-        await sleep(2000);
-    }
-    
-    if (!formReady) {
-        log('⚠️ El formulario no cargó a tiempo. URL actual: ' + page.url());
-        // De todas formas intentamos continuar
+    // 2. Esperar formulario Angular
+    //    IMPORTANTE: DaviPlata es una SPA Angular. Los campos del formulario
+    //    se renderizan DENTRO de la misma URL solicitudInicial/{jwt}.
+    //    La URL NO cambia - Angular solo reemplaza el contenido del DOM.
+    log('⏳ Esperando que Angular renderice el formulario...');
+    try {
+        await page.locator('#nombre').waitFor({ state: 'visible', timeout: 30000 });
+        log('  ✓ Formulario Angular renderizado');
+    } catch {
+        log('  ⚠️ #nombre no apareció en 30s. URL: ' + page.url());
     }
     await sleep(2000);
 
     // 3. Llenar formulario
     log('📝 Llenando formulario...');
     
-    // Esperar que al menos el campo nombre esté visible
-    try { await page.locator('#nombre').waitFor({ state: 'visible', timeout: 8000 }); } catch {}
-
     const nombreInput = page.locator('#nombre');
     if (await nombreInput.isVisible({ timeout: 2000 }).catch(() => false)) {
         await nombreInput.fill(params.nombre);
         log('  ✓ Nombre');
     } else { log('  ✗ No se encontró #nombre'); }
 
-    await selectAngularDropdown('Seleccione', 'Cédula de ciudadanía');
+    const tipoOk = await selectAngularDropdown('Seleccione', 'Cédula de ciudadanía');
+    if (!tipoOk) {
+        // Fallback: buscar "CC" o "Cédula"
+        await selectAngularDropdown('Documento', 'Cédula de ciudadanía');
+    }
 
     const docInput = page.locator('#numeroDocumento');
     if (await docInput.isVisible({ timeout: 2000 }).catch(() => false)) {
