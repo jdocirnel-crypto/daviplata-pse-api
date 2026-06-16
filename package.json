@@ -1,0 +1,17 @@
+{
+  "name": "daviplata-pse-api",
+  "version": "1.0.0",
+  "description": "API para recargas DaviPlata via PSE con navegador automatizado",
+  "main": "daviplata_api.js",
+  "scripts": {
+    "start": "node daviplata_api.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "axios": "^1.16.1",
+    "express": "^5.2.1",
+    "playwright": "^1.60.0"
+  }
+}
