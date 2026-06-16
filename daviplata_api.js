@@ -24,7 +24,7 @@ const axios = require('axios');
 const path = require('path');
 const fs = require('fs');
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 80;
 const CAPTCHA_KEY = process.env.CAPTCHA_KEY || '7fcc7b08476323f7febd6c3f18044e78';
 const CAPTCHA_SITE_KEY = '6LdlZsIkAAAAACkTKDN0laXfW_4MRZ7ZPAek54fV';
 
